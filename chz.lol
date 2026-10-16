@@ -1,7 +1,6 @@
 --[[
-    🎯 UNIVERSAL PRO SCRIPT v5.8 (v5.7 + 修复选中目标崩溃)
-    Fix: TargetPart/CurrentTarget 销毁后访问 .Position 崩溃
-    其他一切保持 v5.7 原样
+    🎯 UNIVERSAL PRO SCRIPT v5.9
+    Features: Silent Aim + ESP Pro + Bullet TP + 死亡立即切换（仅当前目标）
 ]]
 
 --// ==================================================
@@ -182,7 +181,9 @@ local LastCacheUpdate = 0
 local CacheUpdateInterval = 2
 local oldNamecall, oldIndex = nil, nil
 local ESP_Objects = {}
-local _InAimHook = false
+
+-- ✅ Died 事件连接（只针对当前选中目标）
+local _DiedConn = nil
 
 --// ==================================================
 --// 3. FUNÇÕES DO SILENT AIM
@@ -391,9 +392,7 @@ end
 
 local function GetTarget()
     if not LocalPlayer.Character then TargetInRange = false; TargetPart = nil; return nil end
-    if not _InAimHook then
-        UpdateCaches()
-    end
+    UpdateCaches()
     if _G.StickyAim and CurrentTarget then
         if ValidateCurrentTarget() then TargetInRange = true; return CurrentTarget
         else CurrentTarget = nil; TargetPart = nil end
@@ -411,19 +410,9 @@ local function GetTarget()
         local hrp = data.HRP
         local h = data.Humanoid
         if not (hrp and h) then return end
-        -- ✅ 修复：HRP 被销毁时安全跳过，避免 .Position 崩溃
-        if not hrp.Parent then
-            table.insert(deadList, data.Model)
-            return
-        end
-        if not data.Model.Parent then
-            table.insert(deadList, data.Model)
-            return
-        end
-        if _G.DeadCheck and IsDead(data.Model) then
-            table.insert(deadList, data.Model)
-            return
-        end
+        if not hrp.Parent then table.insert(deadList, data.Model); return end
+        if not data.Model.Parent then table.insert(deadList, data.Model); return end
+        if _G.DeadCheck and IsDead(data.Model) then table.insert(deadList, data.Model); return end
         local isBL = false
         if isPlayer then
             if IsWhitelisted(data.Player) then return end
@@ -442,10 +431,7 @@ local function GetTarget()
             if (hrp.Position - lRoot.Position).Magnitude > _G.MaxAimDistance then return end
         end
         local part = GetTargetPart(data.Model) or hrp
-        if not part.Parent then
-            table.insert(deadList, data.Model)
-            return
-        end
+        if not part.Parent then table.insert(deadList, data.Model); return end
         local pos = part.Position
         if hrp.Velocity.Magnitude > 1 and _G.Prediction > 0 then pos = pos + hrp.Velocity * _G.Prediction end
         local sp, on = Camera:WorldToViewportPoint(pos)
@@ -485,6 +471,23 @@ local function GetTarget()
         PlayerCache[m] = nil
     end
     TargetPart = bPart
+
+    -- ✅ 目标切换时挂 Died 事件（只有当前选中目标死亡才清空）
+    if bModel and bModel ~= CurrentTarget then
+        if _DiedConn then _DiedConn:Disconnect(); _DiedConn = nil end
+        local h = bModel:FindFirstChildOfClass("Humanoid")
+        if h then
+            _DiedConn = h.Died:Connect(function()
+                if CurrentTarget == bModel then
+                    NPCCache[bModel] = nil
+                    PlayerCache[bModel] = nil
+                    CurrentTarget = nil
+                    TargetPart = nil
+                end
+            end)
+        end
+    end
+
     return bModel
 end
 
@@ -532,7 +535,6 @@ local function UpdateHighlight()
         if HighlightConnection then HighlightConnection:Disconnect(); HighlightConnection = nil end
         return
     end
-    -- ✅ 修复：加上 .Parent 检查，避免已销毁的目标访问
     if CurrentTarget and CurrentTarget.Parent and TargetPart and TargetPart.Parent then
         if not TargetHighlight or TargetHighlight.Adornee ~= CurrentTarget then TargetHighlight = CreateHighlight(CurrentTarget) end
         if TargetHighlight then
@@ -559,6 +561,7 @@ local function CleanupUIOnly()
     if TargetInfo then TargetInfo.Visible = false; TargetInfo.Text = "" end
     if TargetHighlight then TargetHighlight:Destroy(); TargetHighlight = nil end
     if HighlightConnection then HighlightConnection:Disconnect(); HighlightConnection = nil end
+    if _DiedConn then _DiedConn:Disconnect(); _DiedConn = nil end
     CurrentTarget = nil; TargetPart = nil; TargetInRange = false; NPCCache = {}; PlayerCache = {}
 end
 
@@ -566,7 +569,6 @@ local function UpdateTargetInfo()
     if not _G.ShowTarget or not TargetInfo or not _G.SilentAim then
         TargetInfo.Visible = false; TargetInfo.Text = ""; return
     end
-    -- ✅ 修复：加上 .Parent 检查，避免已销毁的目标访问 .Position
     if CurrentTarget and CurrentTarget.Parent and TargetPart and TargetPart.Parent then
         local sp, on = Camera:WorldToViewportPoint(TargetPart.Position)
         if on then
@@ -825,25 +827,6 @@ end
 
 if not oldNamecall then
     oldNamecall = hookmetamethod(game, "__namecall", function(self, ...)
-        if _InAimHook then
-            return oldNamecall(self, ...)
-        end
-
-        if _G.SilentAim and CurrentTarget and _G.DeadCheck then
-            _InAimHook = true
-            local isDeadNow = false
-            pcall(function() isDeadNow = IsDead(CurrentTarget) end)
-            if isDeadNow then
-                NPCCache[CurrentTarget] = nil
-                PlayerCache[CurrentTarget] = nil
-                CurrentTarget = nil
-                TargetPart = nil
-                pcall(function() CurrentTarget = GetTarget() end)
-            end
-            _InAimHook = false
-        end
-
-        -- ✅ 修复：加上 .Parent 检查，避免已销毁的目标访问 .Position 崩溃
         if not _G.SilentAim or not TargetPart or not CurrentTarget
            or not TargetPart.Parent or not CurrentTarget.Parent then
             return oldNamecall(self, ...)
@@ -955,7 +938,6 @@ task.spawn(function()
 end)
 
 RunService.RenderStepped:Connect(function()
-    -- ✅ 修复：整个视觉更新用 pcall 包裹，任何异常都不会崩溃游戏
     pcall(function()
         Circle.Visible = _G.SilentAim
         if _G.SilentAim then
@@ -1019,7 +1001,7 @@ local ThemeManager = loadstring(game:HttpGet(repo .. "addons/ThemeManager.lua"))
 local SaveManager = loadstring(game:HttpGet(repo .. "addons/SaveManager.lua"))()
 
 local Window = Library:CreateWindow({
-    Title = '🎯 Universal Pro v5.8 (v5.7 + 修复选中崩溃)',
+    Title = '🎯 Universal Pro v5.9 (死亡立即切换)',
     Center = true,
     AutoShow = true,
     TabPadding = 8,
@@ -1041,6 +1023,7 @@ AimMainBox:AddToggle('ToggleSilentAim', { Text = 'Ativar Silent Aim', Default = 
         Library:Notify('🎯 SILENT AIM ATIVADO', 1.5)
     else
         if TargetHighlight then TargetHighlight:Destroy(); TargetHighlight = nil end
+        if _DiedConn then _DiedConn:Disconnect(); _DiedConn = nil end
         Library:Notify('🎯 SILENT AIM DESATIVADO', 1.5)
     end
 end})
@@ -1073,11 +1056,6 @@ AimNPCBox:AddToggle('EnableNPCKeywordFilter', {
     Callback = function(Value)
         _G.NPCKeywordFilterEnabled = Value
         LastCacheUpdate = 0
-        if Value then
-            Library:Notify('🔛 NPC 关键字过滤已启用 (只瞄含关键字的 NPC)', 2)
-        else
-            Library:Notify('🔛 NPC 关键字过滤已关闭 (所有 NPC 都可瞄)', 2)
-        end
     end
 })
 local NPCKeywordInput = AimNPCBox:AddInput('NPCKeywordInput', {
@@ -1110,7 +1088,6 @@ AimNPCBox:AddLabel('📌 只影响 NPC, 不影响玩家')
 
 AimNPCBox:AddToggle('AgressiveNPC', { Text = 'Modo NPC Agressivo (Otimizado)', Default = false, Callback = function(Value)
     _G.AggressiveNPCDetection = Value; LastCacheUpdate = 0; UpdateCaches()
-    if Value then Library:Notify('⚠️ MODO AGRESSIVO ATIVADO', 2) end
 end})
 AimNPCBox:AddToggle('DebugNPCs', { Text = 'Debug NPCs', Default = false, Callback = function(Value) _G.DebugNPCs = Value end })
 AimNPCBox:AddInput('CacheInterval', { Default = '2', Numeric = true, Finished = true, Text = 'Intervalo Cache (s)', Callback = function(Value) local num = tonumber(Value); if num and num > 0 then CacheUpdateInterval = num end end })
@@ -1209,7 +1186,6 @@ end)
 local AimBulletTPBox = Tabs.Aim:AddRightGroupbox('Bullet Teleport')
 AimBulletTPBox:AddToggle('ToggleBulletTP', { Text = 'Ativar Bullet Teleport', Default = false, Tooltip = 'Teleporta a origem do tiro para perto do alvo.', Callback = function(Value)
     _G.BulletTP = Value
-    if Value then Library:Notify('🔫 BULLET TP ATIVADO', 2) else Library:Notify('🔫 BULLET TP DESATIVADO', 2) end
 end})
 AimBulletTPBox:AddLabel('📌 Ignora obstáculos entre você e o alvo.')
 
@@ -1262,7 +1238,6 @@ ESPColorsBox:AddLabel('Cor do Stick'):AddColorPicker('CStick', { Default = Color
 local BypassBox = Tabs.Bypass:AddLeftGroupbox('Bypass Anti-Cheat')
 BypassBox:AddToggle('AdonisBypassToggle', { Text = 'Bypass Adonis Anti-Cheat', Default = true, Tooltip = 'Tenta bypassar o sistema Anti-Cheat do Adonis', Callback = function(Value)
     _G.AdonisBypass = Value
-    if Value then Library:Notify('🛡️ Bypass Adonis ATIVADO', 2) else Library:Notify('🛡️ Bypass Adonis DESATIVADO', 2) end
 end})
 BypassBox:AddLabel('⚠️ Funciona com a maioria dos servidores que usam Adonis')
 BypassBox:AddLabel('📌 Use com moderação para evitar banimentos')
@@ -1282,13 +1257,13 @@ else
 end
 
 local SaveTab = Tabs.Save
-Library:SetWatermark('Universal Pro v5.8')
+Library:SetWatermark('Universal Pro v5.9')
 ThemeManager:SetLibrary(Library)
 SaveManager:SetLibrary(Library)
 SaveManager:IgnoreThemeSettings()
 SaveManager:SetIgnoreIndexes({'MenuKeybind'})
 ThemeManager:SetFolder('UniversalPro')
-SaveManager:SetFolder('UniversalPro/pro')
+SaveManager:SetFolder('UniversalPro/main')
 SaveManager:BuildConfigSection(SaveTab)
 ThemeManager:BuildThemeManager(SaveTab)
 
@@ -1300,5 +1275,5 @@ SaveTab:AddLabel('')
 SaveTab:AddLabel('🎨 Temas')
 SaveTab:AddButton('🔄 Recarregar Temas', function() ThemeManager:Load(); Library:Notify('🎨 Temas recarregados!', 2) end)
 
-Library:Notify('✅ UNIVERSAL PRO v5.8 CARREGADO! (v5.7 + 修复选中崩溃)', 5)
-print("[Universal Pro] v5.8 carregado (修复选中崩溃)")
+Library:Notify('✅ UNIVERSAL PRO v5.9 CARREGADO!', 5)
+print("[Universal Pro] v5.9 carregado")
