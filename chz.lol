@@ -1,7 +1,7 @@
 --[[
-    🎯 UNIVERSAL PRO SCRIPT v5.7 (v5.6 + 防崩溃)
-    Fix: 修复 hook 递归/yield/异常 导致的崩溃
-    其他一切保持 v5.6 原样
+    🎯 UNIVERSAL PRO SCRIPT v5.8 (v5.7 + 修复选中目标崩溃)
+    Fix: TargetPart/CurrentTarget 销毁后访问 .Position 崩溃
+    其他一切保持 v5.7 原样
 ]]
 
 --// ==================================================
@@ -182,8 +182,6 @@ local LastCacheUpdate = 0
 local CacheUpdateInterval = 2
 local oldNamecall, oldIndex = nil, nil
 local ESP_Objects = {}
-
--- ✅ 修复：hook 重入保护标志（必须声明在 GetTarget 之前）
 local _InAimHook = false
 
 --// ==================================================
@@ -393,12 +391,9 @@ end
 
 local function GetTarget()
     if not LocalPlayer.Character then TargetInRange = false; TargetPart = nil; return nil end
-
-    -- ✅ 修复：hook 内部调用时跳过 UpdateCaches，避免 yield across metamethod 崩溃
     if not _InAimHook then
         UpdateCaches()
     end
-
     if _G.StickyAim and CurrentTarget then
         if ValidateCurrentTarget() then TargetInRange = true; return CurrentTarget
         else CurrentTarget = nil; TargetPart = nil end
@@ -416,6 +411,15 @@ local function GetTarget()
         local hrp = data.HRP
         local h = data.Humanoid
         if not (hrp and h) then return end
+        -- ✅ 修复：HRP 被销毁时安全跳过，避免 .Position 崩溃
+        if not hrp.Parent then
+            table.insert(deadList, data.Model)
+            return
+        end
+        if not data.Model.Parent then
+            table.insert(deadList, data.Model)
+            return
+        end
         if _G.DeadCheck and IsDead(data.Model) then
             table.insert(deadList, data.Model)
             return
@@ -438,6 +442,10 @@ local function GetTarget()
             if (hrp.Position - lRoot.Position).Magnitude > _G.MaxAimDistance then return end
         end
         local part = GetTargetPart(data.Model) or hrp
+        if not part.Parent then
+            table.insert(deadList, data.Model)
+            return
+        end
         local pos = part.Position
         if hrp.Velocity.Magnitude > 1 and _G.Prediction > 0 then pos = pos + hrp.Velocity * _G.Prediction end
         local sp, on = Camera:WorldToViewportPoint(pos)
@@ -488,6 +496,7 @@ end
 
 local function CalcChance()
     if not CurrentTarget or not TargetPart then return 0 end
+    if not TargetPart.Parent then return 0 end
     local b = _G.HitChance
     local df, ff = 1.0, 1.0
     if LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
@@ -523,7 +532,8 @@ local function UpdateHighlight()
         if HighlightConnection then HighlightConnection:Disconnect(); HighlightConnection = nil end
         return
     end
-    if CurrentTarget then
+    -- ✅ 修复：加上 .Parent 检查，避免已销毁的目标访问
+    if CurrentTarget and CurrentTarget.Parent and TargetPart and TargetPart.Parent then
         if not TargetHighlight or TargetHighlight.Adornee ~= CurrentTarget then TargetHighlight = CreateHighlight(CurrentTarget) end
         if TargetHighlight then
             local isP = false
@@ -556,7 +566,8 @@ local function UpdateTargetInfo()
     if not _G.ShowTarget or not TargetInfo or not _G.SilentAim then
         TargetInfo.Visible = false; TargetInfo.Text = ""; return
     end
-    if CurrentTarget and TargetPart then
+    -- ✅ 修复：加上 .Parent 检查，避免已销毁的目标访问 .Position
+    if CurrentTarget and CurrentTarget.Parent and TargetPart and TargetPart.Parent then
         local sp, on = Camera:WorldToViewportPoint(TargetPart.Position)
         if on then
             TargetInfo.Visible = true
@@ -676,6 +687,7 @@ local function updateESP()
     for model, p in pairs(ESP_Objects) do
         local h, root = getHum(model)
         if not h or not root then setVis(p, false); continue end
+        if not root.Parent then setVis(p, false); continue end
         if ESP_Config.DeadCheck and IsDead(model) then setVis(p, false); continue end
         local isP = (getPlrFromChar(model) ~= nil)
         if isP then
@@ -804,6 +816,7 @@ end
 --// ==================================================
 local function applyBulletTeleport(origin, targetPart)
     if not _G.BulletTP or not targetPart then return origin end
+    if not targetPart.Parent then return origin end
     local tp = targetPart.Position
     local dir = tp - origin
     if dir.Magnitude < 0.05 then return tp end
@@ -812,31 +825,27 @@ end
 
 if not oldNamecall then
     oldNamecall = hookmetamethod(game, "__namecall", function(self, ...)
-        -- ✅ 修复：hook 重入保护 —— 防止内部调用（如 Raycast/GetTarget）再次触发 hook 导致无限递归崩溃
         if _InAimHook then
             return oldNamecall(self, ...)
         end
 
-        -- ✅ 修复：目标死亡立即切目标（用 pcall 防止异常传播崩溃）
         if _G.SilentAim and CurrentTarget and _G.DeadCheck then
             _InAimHook = true
             local isDeadNow = false
-            pcall(function()
-                isDeadNow = IsDead(CurrentTarget)
-            end)
+            pcall(function() isDeadNow = IsDead(CurrentTarget) end)
             if isDeadNow then
                 NPCCache[CurrentTarget] = nil
                 PlayerCache[CurrentTarget] = nil
                 CurrentTarget = nil
                 TargetPart = nil
-                pcall(function()
-                    CurrentTarget = GetTarget()
-                end)
+                pcall(function() CurrentTarget = GetTarget() end)
             end
             _InAimHook = false
         end
 
-        if not _G.SilentAim or not TargetPart or not CurrentTarget then
+        -- ✅ 修复：加上 .Parent 检查，避免已销毁的目标访问 .Position 崩溃
+        if not _G.SilentAim or not TargetPart or not CurrentTarget
+           or not TargetPart.Parent or not CurrentTarget.Parent then
             return oldNamecall(self, ...)
         end
         local method = getnamecallmethod()
@@ -938,7 +947,7 @@ task.spawn(function()
     while true do
         task.wait(_G.UpdateRate)
         if _G.SilentAim then
-            CurrentTarget = GetTarget()
+            pcall(function() CurrentTarget = GetTarget() end)
         else
             CurrentTarget = nil; TargetInRange = false; TargetPart = nil
         end
@@ -946,26 +955,29 @@ task.spawn(function()
 end)
 
 RunService.RenderStepped:Connect(function()
-    Circle.Visible = _G.SilentAim
-    if _G.SilentAim then
-        local sc = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
-        Circle.Position = sc
-        Circle.Radius = _G.FOV
-        Circle.Color = _G.FOVColor
-        if CurrentTarget then
-            local isP = false
-            for _, d in pairs(PlayerCache) do
-                if d.Model == CurrentTarget then isP = true; break end
+    -- ✅ 修复：整个视觉更新用 pcall 包裹，任何异常都不会崩溃游戏
+    pcall(function()
+        Circle.Visible = _G.SilentAim
+        if _G.SilentAim then
+            local sc = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+            Circle.Position = sc
+            Circle.Radius = _G.FOV
+            Circle.Color = _G.FOVColor
+            if CurrentTarget and CurrentTarget.Parent then
+                local isP = false
+                for _, d in pairs(PlayerCache) do
+                    if d.Model == CurrentTarget then isP = true; break end
+                end
+                if isP then Circle.Color = Color3.fromRGB(0, 150, 255) else Circle.Color = Color3.fromRGB(0, 255, 0) end
+            else
+                if TargetInRange then Circle.Color = Color3.fromRGB(255, 255, 0) else Circle.Color = Color3.fromRGB(255, 50, 0) end
             end
-            if isP then Circle.Color = Color3.fromRGB(0, 150, 255) else Circle.Color = Color3.fromRGB(0, 255, 0) end
         else
-            if TargetInRange then Circle.Color = Color3.fromRGB(255, 255, 0) else Circle.Color = Color3.fromRGB(255, 50, 0) end
+            Circle.Visible = false
         end
-    else
-        Circle.Visible = false
-    end
-    UpdateTargetInfo()
-    UpdateHighlight()
+        UpdateTargetInfo()
+        UpdateHighlight()
+    end)
 end)
 
 scanWorkspace()
@@ -1007,7 +1019,7 @@ local ThemeManager = loadstring(game:HttpGet(repo .. "addons/ThemeManager.lua"))
 local SaveManager = loadstring(game:HttpGet(repo .. "addons/SaveManager.lua"))()
 
 local Window = Library:CreateWindow({
-    Title = '🎯 Universal Pro v5.7 (v5.6 + 防崩溃)',
+    Title = '🎯 Universal Pro v5.8 (v5.7 + 修复选中崩溃)',
     Center = true,
     AutoShow = true,
     TabPadding = 8,
@@ -1270,13 +1282,13 @@ else
 end
 
 local SaveTab = Tabs.Save
-Library:SetWatermark('Universal Pro v5.7')
+Library:SetWatermark('Universal Pro v5.8')
 ThemeManager:SetLibrary(Library)
 SaveManager:SetLibrary(Library)
 SaveManager:IgnoreThemeSettings()
 SaveManager:SetIgnoreIndexes({'MenuKeybind'})
 ThemeManager:SetFolder('UniversalPro')
-SaveManager:SetFolder('UniversalPro/main')
+SaveManager:SetFolder('UniversalPro/pro')
 SaveManager:BuildConfigSection(SaveTab)
 ThemeManager:BuildThemeManager(SaveTab)
 
@@ -1288,5 +1300,5 @@ SaveTab:AddLabel('')
 SaveTab:AddLabel('🎨 Temas')
 SaveTab:AddButton('🔄 Recarregar Temas', function() ThemeManager:Load(); Library:Notify('🎨 Temas recarregados!', 2) end)
 
-Library:Notify('✅ UNIVERSAL PRO v5.7 CARREGADO! (v5.6 + 防崩溃)', 5)
-print("[Universal Pro] v5.7 carregado (防崩溃)")
+Library:Notify('✅ UNIVERSAL PRO v5.8 CARREGADO! (v5.7 + 修复选中崩溃)', 5)
+print("[Universal Pro] v5.8 carregado (修复选中崩溃)")
