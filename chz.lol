@@ -1,7 +1,7 @@
 --[[
-    🎯 UNIVERSAL PRO SCRIPT v5.5 (v5.4 + 死亡过滤立即生效)
-    Fix: Silent Aim 死亡目标立即过滤，不再停留几秒
-    其他一切保持 v5.4 原样
+    🎯 UNIVERSAL PRO SCRIPT v5.6 (v5.5 + 死亡立即切目标)
+    Fix: Silent Aim 开枪瞬间目标已死 → 立即同步切换，不等下一帧
+    其他一切保持 v5.5 原样
 ]]
 
 --// ==================================================
@@ -186,9 +186,6 @@ local ESP_Objects = {}
 --// ==================================================
 --// 3. FUNÇÕES DO SILENT AIM
 --// ==================================================
-
--- ✅ 修复：增加 not c.Parent / not h.Parent 检测
---    角色或 Humanoid 已被移除时立即视为死亡，不再等缓存刷新
 local function IsDead(c)
     if not c then return true end
     if not c.Parent then return true end
@@ -361,14 +358,11 @@ local function ValidateCurrentTarget()
         or CurrentTarget:FindFirstChild("Torso")
         or CurrentTarget:FindFirstChild("UpperTorso")
     if not h or not hrp then return false end
-
-    -- ✅ 修复：检测到死亡立即清缓存 + 清 CurrentTarget
     if _G.DeadCheck and IsDead(CurrentTarget) then
         NPCCache[CurrentTarget] = nil
         PlayerCache[CurrentTarget] = nil
         return false
     end
-
     local blActive = #_G.Blacklist > 0
     local tp = Players:GetPlayerFromCharacter(CurrentTarget)
     local isBL = tp and IsBlacklisted(tp) or false
@@ -409,18 +403,15 @@ local function GetTarget()
     TargetInRange = false; TargetPart = nil
     if not lRoot then return nil end
     local blActive = #_G.Blacklist > 0
+    local deadList = {}
     local function PT(data, isPlayer)
         local hrp = data.HRP
         local h = data.Humanoid
         if not (hrp and h) then return end
-
-        -- ✅ 修复：检测到死亡立即从缓存移除，不再每帧重复检测
         if _G.DeadCheck and IsDead(data.Model) then
-            NPCCache[data.Model] = nil
-            PlayerCache[data.Model] = nil
+            table.insert(deadList, data.Model)
             return
         end
-
         local isBL = false
         if isPlayer then
             if IsWhitelisted(data.Player) then return end
@@ -472,6 +463,10 @@ local function GetTarget()
     end
     if blActive or _G.TargetMode == "Players" or _G.TargetMode == "Both" then
         for _, d in pairs(PlayerCache) do PT(d, true) end
+    end
+    for _, m in ipairs(deadList) do
+        NPCCache[m] = nil
+        PlayerCache[m] = nil
     end
     TargetPart = bPart
     return bModel
@@ -809,6 +804,15 @@ end
 
 if not oldNamecall then
     oldNamecall = hookmetamethod(game, "__namecall", function(self, ...)
+        -- ✅ 修复：开枪瞬间检查目标是否已死，死了立即同步重新选目标
+        if _G.SilentAim and CurrentTarget and _G.DeadCheck and IsDead(CurrentTarget) then
+            NPCCache[CurrentTarget] = nil
+            PlayerCache[CurrentTarget] = nil
+            CurrentTarget = nil
+            TargetPart = nil
+            CurrentTarget = GetTarget()
+        end
+
         if not _G.SilentAim or not TargetPart or not CurrentTarget then
             return oldNamecall(self, ...)
         end
@@ -980,7 +984,7 @@ local ThemeManager = loadstring(game:HttpGet(repo .. "addons/ThemeManager.lua"))
 local SaveManager = loadstring(game:HttpGet(repo .. "addons/SaveManager.lua"))()
 
 local Window = Library:CreateWindow({
-    Title = '🎯 Universal Pro v5.5 (v5.4 + 死亡过滤立即生效)',
+    Title = '🎯 Universal Pro v5.6 (v5.5 + 死亡立即切目标)',
     Center = true,
     AutoShow = true,
     TabPadding = 8,
@@ -1243,7 +1247,7 @@ else
 end
 
 local SaveTab = Tabs.Save
-Library:SetWatermark('Universal Pro v5.5')
+Library:SetWatermark('Universal Pro v5.6')
 ThemeManager:SetLibrary(Library)
 SaveManager:SetLibrary(Library)
 SaveManager:IgnoreThemeSettings()
@@ -1261,5 +1265,5 @@ SaveTab:AddLabel('')
 SaveTab:AddLabel('🎨 Temas')
 SaveTab:AddButton('🔄 Recarregar Temas', function() ThemeManager:Load(); Library:Notify('🎨 Temas recarregados!', 2) end)
 
-Library:Notify('✅ UNIVERSAL PRO v5.5 CARREGADO! (v5.4 + 死亡过滤立即生效)', 5)
-print("[Universal Pro] v5.5 carregado (死亡过滤立即生效)")
+Library:Notify('✅ UNIVERSAL PRO v5.6 CARREGADO! (v5.5 + 死亡立即切目标)', 5)
+print("[Universal Pro] v5.6 carregado (死亡立即切目标)")
