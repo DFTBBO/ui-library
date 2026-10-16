@@ -1,7 +1,7 @@
 --[[
-    🎯 UNIVERSAL PRO SCRIPT v5.4 (v5.3 + 修复工具无法使用)
-    Fix: 移除 Mouse.Hit hook，避免工具无法使用
-    其他一切保持 v5.3 原样
+    🎯 UNIVERSAL PRO SCRIPT v5.5 (v5.4 + 死亡过滤立即生效)
+    Fix: Silent Aim 死亡目标立即过滤，不再停留几秒
+    其他一切保持 v5.4 原样
 ]]
 
 --// ==================================================
@@ -186,10 +186,15 @@ local ESP_Objects = {}
 --// ==================================================
 --// 3. FUNÇÕES DO SILENT AIM
 --// ==================================================
+
+-- ✅ 修复：增加 not c.Parent / not h.Parent 检测
+--    角色或 Humanoid 已被移除时立即视为死亡，不再等缓存刷新
 local function IsDead(c)
     if not c then return true end
+    if not c.Parent then return true end
     local h = c:FindFirstChildOfClass("Humanoid")
     if not h then return true end
+    if not h.Parent then return true end
     if h.Health <= 0 then return true end
     if h:GetState() == Enum.HumanoidStateType.Dead then return true end
     local be = c:FindFirstChild("BodyEffects")
@@ -349,12 +354,21 @@ end
 
 local function ValidateCurrentTarget()
     if not CurrentTarget or not TargetPart then return false end
+    if not CurrentTarget.Parent then return false end
+    if not TargetPart.Parent then return false end
     local h = CurrentTarget:FindFirstChildOfClass("Humanoid")
     local hrp = CurrentTarget:FindFirstChild("HumanoidRootPart")
         or CurrentTarget:FindFirstChild("Torso")
         or CurrentTarget:FindFirstChild("UpperTorso")
     if not h or not hrp then return false end
-    if _G.DeadCheck and IsDead(CurrentTarget) then return false end
+
+    -- ✅ 修复：检测到死亡立即清缓存 + 清 CurrentTarget
+    if _G.DeadCheck and IsDead(CurrentTarget) then
+        NPCCache[CurrentTarget] = nil
+        PlayerCache[CurrentTarget] = nil
+        return false
+    end
+
     local blActive = #_G.Blacklist > 0
     local tp = Players:GetPlayerFromCharacter(CurrentTarget)
     local isBL = tp and IsBlacklisted(tp) or false
@@ -399,7 +413,14 @@ local function GetTarget()
         local hrp = data.HRP
         local h = data.Humanoid
         if not (hrp and h) then return end
-        if _G.DeadCheck and IsDead(data.Model) then return end
+
+        -- ✅ 修复：检测到死亡立即从缓存移除，不再每帧重复检测
+        if _G.DeadCheck and IsDead(data.Model) then
+            NPCCache[data.Model] = nil
+            PlayerCache[data.Model] = nil
+            return
+        end
+
         local isBL = false
         if isPlayer then
             if IsWhitelisted(data.Player) then return end
@@ -778,7 +799,6 @@ end
 --// ==================================================
 --// 5. HOOKS
 --// ==================================================
-
 local function applyBulletTeleport(origin, targetPart)
     if not _G.BulletTP or not targetPart then return origin end
     local tp = targetPart.Position
@@ -881,12 +901,8 @@ if not oldNamecall then
     end)
 end
 
--- ✅ 修复：移除 Mouse.Hit / Mouse.Target 替换，避免工具无法使用
---    原来的 hook 会把 Mouse.Hit 强制替换成 TargetPart.Position，导致
---    工具（铲子/镐子/放置类/治疗类等）读取 Mouse.Hit 时得到错误位置而无法使用
 if not oldIndex then
     oldIndex = hookmetamethod(game, "__index", function(self, key)
-        -- 不再替换 Mouse 的任何属性，保留原值
         return oldIndex(self, key)
     end)
 end
@@ -964,7 +980,7 @@ local ThemeManager = loadstring(game:HttpGet(repo .. "addons/ThemeManager.lua"))
 local SaveManager = loadstring(game:HttpGet(repo .. "addons/SaveManager.lua"))()
 
 local Window = Library:CreateWindow({
-    Title = '🎯 Universal Pro v5.4 (v5.3 + 修复工具无法使用)',
+    Title = '🎯 Universal Pro v5.5 (v5.4 + 死亡过滤立即生效)',
     Center = true,
     AutoShow = true,
     TabPadding = 8,
@@ -1227,7 +1243,7 @@ else
 end
 
 local SaveTab = Tabs.Save
-Library:SetWatermark('Universal Pro v5.4')
+Library:SetWatermark('Universal Pro v5.5')
 ThemeManager:SetLibrary(Library)
 SaveManager:SetLibrary(Library)
 SaveManager:IgnoreThemeSettings()
@@ -1245,5 +1261,5 @@ SaveTab:AddLabel('')
 SaveTab:AddLabel('🎨 Temas')
 SaveTab:AddButton('🔄 Recarregar Temas', function() ThemeManager:Load(); Library:Notify('🎨 Temas recarregados!', 2) end)
 
-Library:Notify('✅ UNIVERSAL PRO v5.4 CARREGADO! (v5.3 + 修复工具无法使用)', 5)
-print("[Universal Pro] v5.4 carregado (修复工具无法使用)")
+Library:Notify('✅ UNIVERSAL PRO v5.5 CARREGADO! (v5.4 + 死亡过滤立即生效)', 5)
+print("[Universal Pro] v5.5 carregado (死亡过滤立即生效)")
