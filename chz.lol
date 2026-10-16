@@ -1,7 +1,7 @@
 --[[
-    🎯 UNIVERSAL PRO SCRIPT v5.6 (v5.5 + 死亡立即切目标)
-    Fix: Silent Aim 开枪瞬间目标已死 → 立即同步切换，不等下一帧
-    其他一切保持 v5.5 原样
+    🎯 UNIVERSAL PRO SCRIPT v5.7 (v5.6 + 防崩溃)
+    Fix: 修复 hook 递归/yield/异常 导致的崩溃
+    其他一切保持 v5.6 原样
 ]]
 
 --// ==================================================
@@ -182,6 +182,9 @@ local LastCacheUpdate = 0
 local CacheUpdateInterval = 2
 local oldNamecall, oldIndex = nil, nil
 local ESP_Objects = {}
+
+-- ✅ 修复：hook 重入保护标志（必须声明在 GetTarget 之前）
+local _InAimHook = false
 
 --// ==================================================
 --// 3. FUNÇÕES DO SILENT AIM
@@ -390,7 +393,12 @@ end
 
 local function GetTarget()
     if not LocalPlayer.Character then TargetInRange = false; TargetPart = nil; return nil end
-    UpdateCaches()
+
+    -- ✅ 修复：hook 内部调用时跳过 UpdateCaches，避免 yield across metamethod 崩溃
+    if not _InAimHook then
+        UpdateCaches()
+    end
+
     if _G.StickyAim and CurrentTarget then
         if ValidateCurrentTarget() then TargetInRange = true; return CurrentTarget
         else CurrentTarget = nil; TargetPart = nil end
@@ -804,13 +812,28 @@ end
 
 if not oldNamecall then
     oldNamecall = hookmetamethod(game, "__namecall", function(self, ...)
-        -- ✅ 修复：开枪瞬间检查目标是否已死，死了立即同步重新选目标
-        if _G.SilentAim and CurrentTarget and _G.DeadCheck and IsDead(CurrentTarget) then
-            NPCCache[CurrentTarget] = nil
-            PlayerCache[CurrentTarget] = nil
-            CurrentTarget = nil
-            TargetPart = nil
-            CurrentTarget = GetTarget()
+        -- ✅ 修复：hook 重入保护 —— 防止内部调用（如 Raycast/GetTarget）再次触发 hook 导致无限递归崩溃
+        if _InAimHook then
+            return oldNamecall(self, ...)
+        end
+
+        -- ✅ 修复：目标死亡立即切目标（用 pcall 防止异常传播崩溃）
+        if _G.SilentAim and CurrentTarget and _G.DeadCheck then
+            _InAimHook = true
+            local isDeadNow = false
+            pcall(function()
+                isDeadNow = IsDead(CurrentTarget)
+            end)
+            if isDeadNow then
+                NPCCache[CurrentTarget] = nil
+                PlayerCache[CurrentTarget] = nil
+                CurrentTarget = nil
+                TargetPart = nil
+                pcall(function()
+                    CurrentTarget = GetTarget()
+                end)
+            end
+            _InAimHook = false
         end
 
         if not _G.SilentAim or not TargetPart or not CurrentTarget then
@@ -984,7 +1007,7 @@ local ThemeManager = loadstring(game:HttpGet(repo .. "addons/ThemeManager.lua"))
 local SaveManager = loadstring(game:HttpGet(repo .. "addons/SaveManager.lua"))()
 
 local Window = Library:CreateWindow({
-    Title = '🎯 Universal Pro v5.6 (v5.5 + 死亡立即切目标)',
+    Title = '🎯 Universal Pro v5.7 (v5.6 + 防崩溃)',
     Center = true,
     AutoShow = true,
     TabPadding = 8,
@@ -1247,7 +1270,7 @@ else
 end
 
 local SaveTab = Tabs.Save
-Library:SetWatermark('Universal Pro v5.6')
+Library:SetWatermark('Universal Pro v5.7')
 ThemeManager:SetLibrary(Library)
 SaveManager:SetLibrary(Library)
 SaveManager:IgnoreThemeSettings()
@@ -1265,5 +1288,5 @@ SaveTab:AddLabel('')
 SaveTab:AddLabel('🎨 Temas')
 SaveTab:AddButton('🔄 Recarregar Temas', function() ThemeManager:Load(); Library:Notify('🎨 Temas recarregados!', 2) end)
 
-Library:Notify('✅ UNIVERSAL PRO v5.6 CARREGADO! (v5.5 + 死亡立即切目标)', 5)
-print("[Universal Pro] v5.6 carregado (死亡立即切目标)")
+Library:Notify('✅ UNIVERSAL PRO v5.7 CARREGADO! (v5.6 + 防崩溃)', 5)
+print("[Universal Pro] v5.7 carregado (防崩溃)")
